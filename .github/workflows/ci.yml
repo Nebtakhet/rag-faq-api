@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .[dev]
+
+      - name: Lint
+        run: ruff check .
+
+      - name: Format check
+        run: ruff format --check .
+
+      - name: Security audit
+        run: pip-audit 
+		
+      - name: Typecheck
+        run: mypy app tests
+
+      - name: Migration drift check
+        env:
+          SECRET_KEY: test-secret-key-32-chars-min-000000
+          REFRESH_TOKEN_SECRET: test-refresh-secret-32-chars-0000
+          SQLALCHEMY_DATABASE_URI: sqlite:///./ci.db
+          AUTO_CREATE_SCHEMA: "false"
+        run: |
+          alembic upgrade head
+          alembic check
+
+      - name: Tests + Coverage gate
+        run: pytest tests/ --cov=app --cov-report=term-missing --cov-fail-under=78
