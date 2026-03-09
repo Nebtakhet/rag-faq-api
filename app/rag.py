@@ -1,5 +1,4 @@
-from embeddings import embed_query
-from vectorestore import VectorStore
+from app.embeddings import embed_query
 from openai import OpenAI
 import os
 
@@ -8,7 +7,9 @@ client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 def generate_answer(query, vector_store):
 	query_embedding = embed_query(query)
 	context = vector_store.search(query_embedding, top_k=5)
-	context_text = "\n".join([meta for meta, _ in context])
+	context_text = "\n".join([item[0].get("text", "") for item in context if isinstance(item[0], dict)])
+	if not context_text.strip():
+		context_text = "No indexed context available."
 
 	prompt = f"""
 You are a FAQ assistant. 
