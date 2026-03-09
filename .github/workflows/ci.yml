@@ -29,8 +29,8 @@ jobs:
         run: ruff format --check .
 
       - name: Security audit
-        run: pip-audit 
-		
+        run: pip-audit
+
       - name: Typecheck
         run: mypy app tests
 
