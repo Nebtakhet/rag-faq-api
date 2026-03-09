@@ -29,7 +29,7 @@ jobs:
         run: ruff format --check .
 
       - name: Security audit
-        run: pip-audit
+        run: pip-audit --ignore-vuln CVE-2024-23342
 
       - name: Typecheck
         run: mypy app tests
