@@ -1,0 +1,203 @@
+from pathlib import Path
+from io import BytesIO
+
+import pytest
+from fastapi import HTTPException, UploadFile
+
+from app import main
+
+
+def test_require_admin_missing_config(monkeypatch) -> None:
+    monkeypatch.setattr(main, "ADMIN_API_KEY", "")
+
+    with pytest.raises(HTTPException, match="ADMIN_API_KEY is not configured"):
+        main.require_admin("anything")
+
+
+def test_require_admin_invalid_key(monkeypatch) -> None:
+    monkeypatch.setattr(main, "ADMIN_API_KEY", "secret")
+
+    with pytest.raises(HTTPException, match="Invalid admin key"):
+        main.require_admin("wrong")
+
+
+def test_require_admin_valid_key(monkeypatch) -> None:
+    monkeypatch.setattr(main, "ADMIN_API_KEY", "secret")
+    main.require_admin("secret")
+
+
+def test_ask_requires_vector_store(monkeypatch) -> None:
+    monkeypatch.setattr(main, "vector_store", None)
+
+    with pytest.raises(HTTPException, match="No indexed documents"):
+        main.ask("hello")
+
+
+def test_ask_returns_generated_answer(monkeypatch) -> None:
+    monkeypatch.setattr(main, "vector_store", object())
+    monkeypatch.setattr(main, "generate_answer", lambda _q, _s: "ok")
+
+    assert main.ask("hello") == {"answer": "ok"}
+
+
+def test_rebuild_index_from_data_empty_dir_cleans_files(monkeypatch, tmp_path: Path) -> None:
+    index_path = tmp_path / "faiss.index"
+    metadata_path = tmp_path / "faiss_metadata.json"
+    index_path.write_text("old", encoding="utf-8")
+    metadata_path.write_text("old", encoding="utf-8")
+
+    monkeypatch.setattr(main, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(main, "INDEX_PATH", index_path)
+    monkeypatch.setattr(main, "METADATA_PATH", metadata_path)
+
+    summary = main._rebuild_index_from_data()
+
+    assert summary == {"files": 0, "chunks": 0}
+    assert main.vector_store is None
+    assert not index_path.exists()
+    assert not metadata_path.exists()
+
+
+def test_rebuild_index_from_data_indexes_supported_files(monkeypatch, tmp_path: Path) -> None:
+    index_path = tmp_path / "faiss.index"
+    metadata_path = tmp_path / "faiss_metadata.json"
+
+    (tmp_path / "notes.txt").write_text("hello", encoding="utf-8")
+    (tmp_path / "ignore.pdf").write_text("x", encoding="utf-8")
+
+    monkeypatch.setattr(main, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(main, "INDEX_PATH", index_path)
+    monkeypatch.setattr(main, "METADATA_PATH", metadata_path)
+    monkeypatch.setattr(main, "chunk_text", lambda text: [text, "extra"])
+    monkeypatch.setattr(main, "embed_text", lambda chunks: [[0.1, 0.2] for _ in chunks])
+
+    summary = main._rebuild_index_from_data()
+
+    assert summary == {"files": 1, "chunks": 2}
+    assert main.vector_store is not None
+    assert index_path.exists()
+    assert metadata_path.exists()
+
+
+def test_list_documents_reports_files_and_chunk_count(monkeypatch, tmp_path: Path) -> None:
+    (tmp_path / "a.txt").write_text("a", encoding="utf-8")
+    (tmp_path / "b.md").write_text("b", encoding="utf-8")
+    (tmp_path / "c.json").write_text("c", encoding="utf-8")
+
+    class DummyStore:
+        metadata = [{"id": 1}, {"id": 2}, {"id": 3}]
+
+    monkeypatch.setattr(main, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(main, "vector_store", DummyStore())
+
+    payload = main.list_documents(None)
+
+    assert payload["documents"] == ["a.txt", "b.md"]
+    assert payload["indexed_chunks"] == 3
+
+
+def test_list_documents_with_no_vector_store(monkeypatch, tmp_path: Path) -> None:
+    (tmp_path / "a.txt").write_text("a", encoding="utf-8")
+
+    monkeypatch.setattr(main, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(main, "vector_store", None)
+
+    payload = main.list_documents(None)
+
+    assert payload["documents"] == ["a.txt"]
+    assert payload["indexed_chunks"] == 0
+
+
+def test_load_existing_index_sets_vector_store(monkeypatch, tmp_path: Path) -> None:
+    index_path = tmp_path / "faiss.index"
+    metadata_path = tmp_path / "faiss_metadata.json"
+    index_path.write_text("x", encoding="utf-8")
+    metadata_path.write_text("y", encoding="utf-8")
+
+    sentinel = object()
+    monkeypatch.setattr(main, "INDEX_PATH", index_path)
+    monkeypatch.setattr(main, "METADATA_PATH", metadata_path)
+    monkeypatch.setattr(main.VectorStore, "load", lambda *_args: sentinel)
+
+    main._load_existing_index()
+
+    assert main.vector_store is sentinel
+
+
+def test_on_startup_creates_data_dir_and_loads_index(monkeypatch, tmp_path: Path) -> None:
+    data_dir = tmp_path / "data"
+    called = {"load": False}
+
+    monkeypatch.setattr(main, "DATA_DIR", data_dir)
+    monkeypatch.setattr(main, "_load_existing_index", lambda: called.__setitem__("load", True))
+
+    main.on_startup()
+
+    assert data_dir.exists()
+    assert called["load"] is True
+
+
+def test_rebuild_index_returns_zero_chunks_when_chunking_returns_none(
+    monkeypatch, tmp_path: Path
+) -> None:
+    (tmp_path / "notes.txt").write_text("content", encoding="utf-8")
+
+    monkeypatch.setattr(main, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(main, "INDEX_PATH", tmp_path / "faiss.index")
+    monkeypatch.setattr(main, "METADATA_PATH", tmp_path / "faiss_metadata.json")
+    monkeypatch.setattr(main, "chunk_text", lambda _text: [])
+
+    summary = main._rebuild_index_from_data()
+
+    assert summary == {"files": 1, "chunks": 0}
+    assert main.vector_store is None
+
+
+def test_rebuild_index_returns_zero_chunks_when_embeddings_empty(
+    monkeypatch, tmp_path: Path
+) -> None:
+    (tmp_path / "notes.txt").write_text("content", encoding="utf-8")
+
+    monkeypatch.setattr(main, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(main, "INDEX_PATH", tmp_path / "faiss.index")
+    monkeypatch.setattr(main, "METADATA_PATH", tmp_path / "faiss_metadata.json")
+    monkeypatch.setattr(main, "chunk_text", lambda _text: ["chunk"])
+    monkeypatch.setattr(main, "embed_text", lambda _chunks: [])
+
+    summary = main._rebuild_index_from_data()
+
+    assert summary == {"files": 1, "chunks": 0}
+    assert main.vector_store is None
+
+
+def make_upload(filename: str, payload: bytes) -> UploadFile:
+    return UploadFile(filename=filename, file=BytesIO(payload))
+
+
+@pytest.mark.anyio
+async def test_upload_documents_rejects_unsupported_file(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(main, "DATA_DIR", tmp_path)
+
+    with pytest.raises(HTTPException, match="Unsupported file type"):
+        await main.upload_documents(files=[make_upload("bad.pdf", b"x")], _=None)
+
+
+@pytest.mark.anyio
+async def test_upload_documents_rejects_large_file(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(main, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(main, "MAX_UPLOAD_BYTES", 3)
+
+    with pytest.raises(HTTPException, match="File too large"):
+        await main.upload_documents(files=[make_upload("ok.txt", b"1234")], _=None)
+
+
+@pytest.mark.anyio
+async def test_upload_documents_success(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(main, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(main, "MAX_UPLOAD_BYTES", 100)
+    monkeypatch.setattr(main, "_rebuild_index_from_data", lambda: {"files": 1, "chunks": 1})
+
+    payload = await main.upload_documents(files=[make_upload("ok.txt", b"hello")], _=None)
+
+    assert payload == {"uploaded": ["ok.txt"], "reindexed": {"files": 1, "chunks": 1}}
+    assert (tmp_path / "ok.txt").read_bytes() == b"hello"
