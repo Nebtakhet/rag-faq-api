@@ -2,10 +2,21 @@ from app.embeddings import embed_query
 from openai import OpenAI
 import os
 
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+_client = None
+
+
+def _get_client():
+    global _client
+    if _client is None:
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            raise RuntimeError("OPENAI_API_KEY is not set")
+        _client = OpenAI(api_key=api_key)
+    return _client
 
 
 def generate_answer(query, vector_store):
+    client = _get_client()
     query_embedding = embed_query(query)
     context = vector_store.search(query_embedding, top_k=5)
     context_text = "\n".join(
@@ -27,4 +38,5 @@ If you don't know the answer, say "I don't know". Do not use any information out
     response = client.chat.completions.create(
         model="gpt-4o-mini", temperature=0.2, messages=[{"role": "system", "content": prompt}]
     )
-    return response.choices[0].message.content.strip()
+    content = response.choices[0].message.content
+    return (content or "").strip()
