@@ -3,6 +3,7 @@ from io import BytesIO
 
 import pytest
 from fastapi import HTTPException, UploadFile
+from openai import OpenAIError
 
 from app import main
 
@@ -63,7 +64,7 @@ def test_rebuild_index_from_data_indexes_supported_files(monkeypatch, tmp_path: 
     metadata_path = tmp_path / "faiss_metadata.json"
 
     (tmp_path / "notes.txt").write_text("hello", encoding="utf-8")
-    (tmp_path / "ignore.pdf").write_text("x", encoding="utf-8")
+    (tmp_path / "ignore.json").write_text("x", encoding="utf-8")
 
     monkeypatch.setattr(main, "DATA_DIR", tmp_path)
     monkeypatch.setattr(main, "INDEX_PATH", index_path)
@@ -82,6 +83,7 @@ def test_rebuild_index_from_data_indexes_supported_files(monkeypatch, tmp_path: 
 def test_list_documents_reports_files_and_chunk_count(monkeypatch, tmp_path: Path) -> None:
     (tmp_path / "a.txt").write_text("a", encoding="utf-8")
     (tmp_path / "b.md").write_text("b", encoding="utf-8")
+    (tmp_path / "guide.pdf").write_text("pdf", encoding="utf-8")
     (tmp_path / "c.json").write_text("c", encoding="utf-8")
 
     class DummyStore:
@@ -92,7 +94,7 @@ def test_list_documents_reports_files_and_chunk_count(monkeypatch, tmp_path: Pat
 
     payload = main.list_documents(None)
 
-    assert payload["documents"] == ["a.txt", "b.md"]
+    assert payload["documents"] == ["a.txt", "b.md", "guide.pdf"]
     assert payload["indexed_chunks"] == 3
 
 
@@ -179,7 +181,28 @@ async def test_upload_documents_rejects_unsupported_file(monkeypatch, tmp_path: 
     monkeypatch.setattr(main, "DATA_DIR", tmp_path)
 
     with pytest.raises(HTTPException, match="Unsupported file type"):
-        await main.upload_documents(files=[make_upload("bad.pdf", b"x")], _=None)
+        await main.upload_documents(files=[make_upload("bad.docx", b"x")], _=None)
+
+
+def test_read_document_uses_pdf_reader(monkeypatch, tmp_path: Path) -> None:
+    pdf_path = tmp_path / "doc.pdf"
+    pdf_path.write_bytes(b"%PDF")
+
+    monkeypatch.setattr(main, "_read_pdf_file", lambda path: f"pdf:{path.name}")
+
+    assert main._read_document(pdf_path) == "pdf:doc.pdf"
+
+
+@pytest.mark.anyio
+async def test_upload_documents_accepts_pdf(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(main, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(main, "MAX_UPLOAD_BYTES", 100)
+    monkeypatch.setattr(main, "_rebuild_index_from_data", lambda: {"files": 1, "chunks": 1})
+
+    payload = await main.upload_documents(files=[make_upload("doc.pdf", b"%PDF-1.4")], _=None)
+
+    assert payload == {"uploaded": ["doc.pdf"], "reindexed": {"files": 1, "chunks": 1}}
+    assert (tmp_path / "doc.pdf").read_bytes() == b"%PDF-1.4"
 
 
 @pytest.mark.anyio
@@ -201,3 +224,31 @@ async def test_upload_documents_success(monkeypatch, tmp_path: Path) -> None:
 
     assert payload == {"uploaded": ["ok.txt"], "reindexed": {"files": 1, "chunks": 1}}
     assert (tmp_path / "ok.txt").read_bytes() == b"hello"
+
+
+@pytest.mark.anyio
+async def test_upload_documents_reports_missing_openai_key(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(main, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(main, "MAX_UPLOAD_BYTES", 100)
+
+    def fail_rebuild() -> dict:
+        raise RuntimeError("OPENAI_API_KEY is not set")
+
+    monkeypatch.setattr(main, "_rebuild_index_from_data", fail_rebuild)
+
+    with pytest.raises(HTTPException, match="OPENAI_API_KEY is not configured"):
+        await main.upload_documents(files=[make_upload("ok.txt", b"hello")], _=None)
+
+
+@pytest.mark.anyio
+async def test_upload_documents_reports_openai_failure(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(main, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(main, "MAX_UPLOAD_BYTES", 100)
+
+    def fail_rebuild() -> dict:
+        raise OpenAIError("boom")
+
+    monkeypatch.setattr(main, "_rebuild_index_from_data", fail_rebuild)
+
+    with pytest.raises(HTTPException, match="Document indexing failed while calling OpenAI"):
+        await main.upload_documents(files=[make_upload("ok.txt", b"hello")], _=None)
