@@ -1,24 +1,43 @@
+import os
 from pathlib import Path
 from typing import Annotated
-import os
 
+from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
+from openai import OpenAIError
+from pypdf import PdfReader
+from pypdf.errors import PdfReadError
 
 from app.chunking import chunk_text
 from app.embeddings import embed_text
 from app.rag import generate_answer
 from app.vectorestore import VectorStore
 
+load_dotenv()
+
 app = FastAPI()
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 INDEX_PATH = DATA_DIR / "faiss.index"
 METADATA_PATH = DATA_DIR / "faiss_metadata.json"
-ALLOWED_EXTENSIONS = {".txt", ".md"}
+ALLOWED_EXTENSIONS = {".txt", ".md", ".pdf"}
 MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_BYTES", "5242880"))
 ADMIN_API_KEY = os.getenv("ADMIN_API_KEY", "")
 
 vector_store = None
+
+
+def _raise_processing_http_error(exc: Exception) -> None:
+    if isinstance(exc, PdfReadError):
+        raise HTTPException(status_code=400, detail=f"Could not read PDF: {exc}") from exc
+    if isinstance(exc, RuntimeError) and str(exc) == "OPENAI_API_KEY is not set":
+        raise HTTPException(status_code=500, detail="OPENAI_API_KEY is not configured") from exc
+    if isinstance(exc, OpenAIError):
+        raise HTTPException(
+            status_code=502,
+            detail="Document indexing failed while calling OpenAI. Check OPENAI_API_KEY.",
+        ) from exc
+    raise exc
 
 
 def require_admin(x_admin_key: Annotated[str | None, Header()] = None) -> None:
@@ -36,6 +55,17 @@ def _load_existing_index() -> None:
 
 def _read_text_file(file_path: Path) -> str:
     return file_path.read_text(encoding="utf-8", errors="ignore")
+
+
+def _read_pdf_file(file_path: Path) -> str:
+    reader = PdfReader(str(file_path))
+    return "\n".join(page_text for page in reader.pages if (page_text := page.extract_text()))
+
+
+def _read_document(file_path: Path) -> str:
+    if file_path.suffix.lower() == ".pdf":
+        return _read_pdf_file(file_path)
+    return _read_text_file(file_path)
 
 
 def _rebuild_index_from_data() -> dict:
@@ -61,7 +91,7 @@ def _rebuild_index_from_data() -> dict:
     store = None
 
     for source_file in files:
-        text = _read_text_file(source_file)
+        text = _read_document(source_file)
         if not text.strip():
             continue
 
@@ -106,7 +136,10 @@ def on_startup() -> None:
 def ask(question: str):
     if vector_store is None:
         raise HTTPException(status_code=400, detail="No indexed documents. Upload documents first.")
-    answer = generate_answer(question, vector_store)
+    try:
+        answer = generate_answer(question, vector_store)
+    except Exception as exc:
+        _raise_processing_http_error(exc)
     return {"answer": answer}
 
 
@@ -132,7 +165,10 @@ async def upload_documents(
         target.write_bytes(payload)
         uploaded.append(filename)
 
-    summary = _rebuild_index_from_data()
+    try:
+        summary = _rebuild_index_from_data()
+    except Exception as exc:
+        _raise_processing_http_error(exc)
     return {
         "uploaded": uploaded,
         "reindexed": summary,
@@ -141,7 +177,10 @@ async def upload_documents(
 
 @app.post("/admin/reindex")
 def reindex_documents(_: None = Depends(require_admin)):
-    summary = _rebuild_index_from_data()
+    try:
+        summary = _rebuild_index_from_data()
+    except Exception as exc:
+        _raise_processing_http_error(exc)
     return {"reindexed": summary}
 
 
