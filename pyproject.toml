@@ -27,6 +27,7 @@ dependencies = [
     "fastapi-cache2>=0.2.1",
 	"openai",
 	"faiss-cpu",
+    "pypdf>=5.4.0",
 	"python-dotenv",
 	"tqdm",
 ]
