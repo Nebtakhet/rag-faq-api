@@ -1,77 +1,128 @@
 # rag-faq-api
-Minimal RAG based FAQ API, built with FastAPI, OpenAI embeddings and FAISS
 
-# GenAI FAQ Chat (RAG Prototype)
+Minimal RAG FAQ API built with FastAPI, OpenAI embeddings, and FAISS.
 
-A clean, minimal Retrieval-Augmented Generation (RAG) system for question answering over custom documents.
+## Overview
 
-This project builds a production-style RAG pipeline from scratch using:
+This project indexes local documents and answers questions from retrieved context.
 
-- OpenAI embeddings
-- FAISS vector store
-- FastAPI backend
-- Prompt-controlled LLM generation
+Core flow:
 
-No frameworks. No LangChain.
+1. Load documents from `data/`
+2. Split text into chunks
+3. Create embeddings with OpenAI
+4. Store vectors in FAISS
+5. Retrieve top matches for a question
+6. Generate a grounded answer
 
-The system:
+## Features
 
-1. Loads local documents
-2. Chunks text with overlap
-3. Generates embeddings
-4. Stores vectors in FAISS
-5. Retrieves relevant chunks via similarity search
-6. Injects context into a controled prompt
-7. Returns grounded answers
+- Admin-only document ingestion
+- Public read-only question endpoint
+- Persistent FAISS index on disk
+- Supported file types: `.txt`, `.md`, `.pdf`
 
-This repository will focus on architecture clarity and cost awareness.
+## Requirements
 
-## Admin-managed document ingestion (MVP)
+- Python 3.11+
+- A valid OpenAI API key
 
-The API supports a master/admin flow where only authorized users can upload source documents.
+## Quick Start
 
-### Required environment variables
-
-- `OPENAI_API_KEY`: OpenAI key for embeddings and answer generation.
-- `ADMIN_API_KEY`: secret key required for all `/admin/*` endpoints.
-- `MAX_UPLOAD_BYTES` (optional): max file size in bytes per upload (default `5242880`).
-
-### Supported document types
-
-- `.txt`
-- `.md`
-
-Uploaded files are stored under `data/`.
-The FAISS index and metadata are persisted in `data/faiss.index` and `data/faiss_metadata.json`.
-
-### Endpoints
-
-- `GET /ask?question=...` (public, read-only)
-- `POST /admin/documents` (admin-only, multipart upload)
-- `POST /admin/reindex` (admin-only, full rebuild from `data/`)
-- `GET /admin/documents` (admin-only, list known documents and indexed chunk count)
-
-### Example usage
-
-Upload docs:
+1. Create and activate a virtual environment:
 
 ```bash
-curl -X POST "http://localhost:8000/admin/documents" \
-	-H "X-Admin-Key: $ADMIN_API_KEY" \
+make venv
+source .venv/bin/activate
+```
+
+2. Install dependencies:
+
+```bash
+make install
+```
+
+3. Create `.env` in repo root:
+
+```bash
+cp .env.example .env
+```
+
+Then edit `.env` and set at least:
+
+```bash
+OPENAI_API_KEY=sk-your-real-key
+ADMIN_API_KEY=my-admin-secret
+MAX_UPLOAD_BYTES=5242880
+```
+
+Optional keys in `.env.example` are also available for migration/docker setups (`SQLALCHEMY_DATABASE_URI`, `REDIS_URL`, etc.).
+
+4. Run the API:
+
+```bash
+make run
+```
+
+5. Open docs UI:
+
+```text
+http://127.0.0.1:8000/docs
+```
+
+## API Endpoints
+
+- `GET /ask?question=...`
+- `POST /admin/documents`
+- `POST /admin/reindex`
+- `GET /admin/documents`
+
+Admin endpoints require header `X-Admin-Key: <ADMIN_API_KEY>`.
+
+## Example Usage
+
+Upload documents:
+
+```bash
+curl -X POST "http://127.0.0.1:8000/admin/documents" \
+	-H "X-Admin-Key: my-admin-secret" \
 	-F "files=@data/faq.txt" \
-	-F "files=@data/policies.md"
+	-F "files=@data/policies.md" \
+	-F "files=@data/reference.pdf"
 ```
 
-Reindex all docs:
+List indexed docs:
 
 ```bash
-curl -X POST "http://localhost:8000/admin/reindex" \
-	-H "X-Admin-Key: $ADMIN_API_KEY"
+curl -X GET "http://127.0.0.1:8000/admin/documents" \
+	-H "X-Admin-Key: my-admin-secret"
 ```
 
-List loaded docs:
+Ask a question:
 
 ```bash
-curl -X GET "http://localhost:8000/admin/documents" \
-	-H "X-Admin-Key: $ADMIN_API_KEY"
+curl "http://127.0.0.1:8000/ask?question=What%20does%20this%20project%20do%3F"
 ```
+
+Reindex all files in `data/`:
+
+```bash
+curl -X POST "http://127.0.0.1:8000/admin/reindex" \
+	-H "X-Admin-Key: my-admin-secret"
+```
+
+## Data and Persistence
+
+- Uploaded source files are stored in `data/`
+- FAISS index is persisted to:
+	- `data/faiss.index`
+	- `data/faiss_metadata.json`
+
+## Common Errors
+
+- `{"detail":"OPENAI_API_KEY is not configured"}`:
+	- `.env` is missing or invalid.
+- `{"detail":"Document indexing failed while calling OpenAI. Check OPENAI_API_KEY."}`:
+	- OpenAI key is invalid, expired, or has no billing access.
+- `{"detail":"Unsupported file type: ..."}`:
+	- Only `.txt`, `.md`, `.pdf` are accepted.
