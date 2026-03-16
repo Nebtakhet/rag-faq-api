@@ -1,6 +1,6 @@
 import pytest
 
-from app.chunking import chunk_text
+from app.services.chunking import chunk_text
 
 
 def test_chunk_text_splits_with_overlap() -> None:
