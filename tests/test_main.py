@@ -10,6 +10,7 @@ from app import main
 
 def test_require_admin_missing_config(monkeypatch) -> None:
     monkeypatch.setattr(main, "ADMIN_API_KEY", "")
+    monkeypatch.setattr(main.settings, "admin_api_key", "")
 
     with pytest.raises(HTTPException, match="ADMIN_API_KEY is not configured"):
         main.require_admin("anything")
@@ -17,6 +18,7 @@ def test_require_admin_missing_config(monkeypatch) -> None:
 
 def test_require_admin_invalid_key(monkeypatch) -> None:
     monkeypatch.setattr(main, "ADMIN_API_KEY", "secret")
+    monkeypatch.setattr(main.settings, "admin_api_key", "secret")
 
     with pytest.raises(HTTPException, match="Invalid admin key"):
         main.require_admin("wrong")
@@ -24,6 +26,7 @@ def test_require_admin_invalid_key(monkeypatch) -> None:
 
 def test_require_admin_valid_key(monkeypatch) -> None:
     monkeypatch.setattr(main, "ADMIN_API_KEY", "secret")
+    monkeypatch.setattr(main.settings, "admin_api_key", "secret")
     main.require_admin("secret")
 
 
@@ -197,6 +200,7 @@ def test_read_document_uses_pdf_reader(monkeypatch, tmp_path: Path) -> None:
 async def test_upload_documents_accepts_pdf(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(main, "DATA_DIR", tmp_path)
     monkeypatch.setattr(main, "MAX_UPLOAD_BYTES", 100)
+    monkeypatch.setattr(main.settings, "max_upload_bytes", 100)
     monkeypatch.setattr(main, "_rebuild_index_from_data", lambda: {"files": 1, "chunks": 1})
 
     payload = await main.upload_documents(files=[make_upload("doc.pdf", b"%PDF-1.4")], _=None)
@@ -209,6 +213,7 @@ async def test_upload_documents_accepts_pdf(monkeypatch, tmp_path: Path) -> None
 async def test_upload_documents_rejects_large_file(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(main, "DATA_DIR", tmp_path)
     monkeypatch.setattr(main, "MAX_UPLOAD_BYTES", 3)
+    monkeypatch.setattr(main.settings, "max_upload_bytes", 3)
 
     with pytest.raises(HTTPException, match="File too large"):
         await main.upload_documents(files=[make_upload("ok.txt", b"1234")], _=None)
@@ -218,6 +223,7 @@ async def test_upload_documents_rejects_large_file(monkeypatch, tmp_path: Path) 
 async def test_upload_documents_success(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(main, "DATA_DIR", tmp_path)
     monkeypatch.setattr(main, "MAX_UPLOAD_BYTES", 100)
+    monkeypatch.setattr(main.settings, "max_upload_bytes", 100)
     monkeypatch.setattr(main, "_rebuild_index_from_data", lambda: {"files": 1, "chunks": 1})
 
     payload = await main.upload_documents(files=[make_upload("ok.txt", b"hello")], _=None)
@@ -230,6 +236,7 @@ async def test_upload_documents_success(monkeypatch, tmp_path: Path) -> None:
 async def test_upload_documents_reports_missing_openai_key(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(main, "DATA_DIR", tmp_path)
     monkeypatch.setattr(main, "MAX_UPLOAD_BYTES", 100)
+    monkeypatch.setattr(main.settings, "max_upload_bytes", 100)
 
     def fail_rebuild() -> dict:
         raise RuntimeError("OPENAI_API_KEY is not set")
@@ -244,6 +251,7 @@ async def test_upload_documents_reports_missing_openai_key(monkeypatch, tmp_path
 async def test_upload_documents_reports_openai_failure(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(main, "DATA_DIR", tmp_path)
     monkeypatch.setattr(main, "MAX_UPLOAD_BYTES", 100)
+    monkeypatch.setattr(main.settings, "max_upload_bytes", 100)
 
     def fail_rebuild() -> dict:
         raise OpenAIError("boom")
