@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app import embeddings, rag
+from app.services import embeddings, rag
 
 
 def test_embed_text_returns_embedding_list(monkeypatch) -> None:
@@ -93,7 +93,7 @@ def test_generate_answer_handles_empty_context_and_none_content(monkeypatch) -> 
 
 def test_embeddings_get_client_requires_api_key(monkeypatch) -> None:
     monkeypatch.setattr(embeddings, "_client", None)
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setattr(embeddings.settings, "openai_api_key", None)
 
     with pytest.raises(RuntimeError, match="OPENAI_API_KEY is not set"):
         embeddings._get_client()
@@ -102,7 +102,7 @@ def test_embeddings_get_client_requires_api_key(monkeypatch) -> None:
 def test_embeddings_get_client_creates_once(monkeypatch) -> None:
     dummy_client = object()
     monkeypatch.setattr(embeddings, "_client", None)
-    monkeypatch.setenv("OPENAI_API_KEY", "dummy")
+    monkeypatch.setattr(embeddings.settings, "openai_api_key", "dummy")
     monkeypatch.setattr(embeddings, "OpenAI", lambda api_key: dummy_client)
 
     assert embeddings._get_client() is dummy_client
@@ -111,7 +111,7 @@ def test_embeddings_get_client_creates_once(monkeypatch) -> None:
 
 def test_rag_get_client_requires_api_key(monkeypatch) -> None:
     monkeypatch.setattr(rag, "_client", None)
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setattr(rag.settings, "openai_api_key", None)
 
     with pytest.raises(RuntimeError, match="OPENAI_API_KEY is not set"):
         rag._get_client()
