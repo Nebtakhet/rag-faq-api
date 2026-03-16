@@ -1,19 +1,16 @@
-import os
 from pathlib import Path
 from typing import Annotated
 
-from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
 from openai import OpenAIError
 from pypdf import PdfReader
 from pypdf.errors import PdfReadError
 
-from app.chunking import chunk_text
-from app.embeddings import embed_text
-from app.rag import generate_answer
-from app.vectorestore import VectorStore
-
-load_dotenv()
+from app.core.config import settings
+from app.services.chunking import chunk_text
+from app.services.embeddings import embed_text
+from app.services.rag import generate_answer
+from app.storage.vector_store import VectorStore
 
 app = FastAPI()
 
@@ -21,8 +18,8 @@ DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 INDEX_PATH = DATA_DIR / "faiss.index"
 METADATA_PATH = DATA_DIR / "faiss_metadata.json"
 ALLOWED_EXTENSIONS = {".txt", ".md", ".pdf"}
-MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_BYTES", "5242880"))
-ADMIN_API_KEY = os.getenv("ADMIN_API_KEY", "")
+MAX_UPLOAD_BYTES = settings.max_upload_bytes
+ADMIN_API_KEY = settings.admin_api_key
 
 vector_store = None
 
@@ -41,9 +38,10 @@ def _raise_processing_http_error(exc: Exception) -> None:
 
 
 def require_admin(x_admin_key: Annotated[str | None, Header()] = None) -> None:
-    if not ADMIN_API_KEY:
+    admin_api_key = settings.admin_api_key
+    if not admin_api_key:
         raise HTTPException(status_code=500, detail="ADMIN_API_KEY is not configured")
-    if x_admin_key != ADMIN_API_KEY:
+    if x_admin_key != admin_api_key:
         raise HTTPException(status_code=403, detail="Invalid admin key")
 
 
@@ -158,7 +156,7 @@ async def upload_documents(
             raise HTTPException(status_code=400, detail=f"Unsupported file type: {filename}")
 
         payload = await upload.read()
-        if len(payload) > MAX_UPLOAD_BYTES:
+        if len(payload) > settings.max_upload_bytes:
             raise HTTPException(status_code=400, detail=f"File too large: {filename}")
 
         target = DATA_DIR / filename
