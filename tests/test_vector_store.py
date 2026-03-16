@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from app.vectorestore import VectorStore
+from app.storage.vector_store import VectorStore
 
 
 def test_vector_store_add_and_search() -> None:
