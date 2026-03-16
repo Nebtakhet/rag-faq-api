@@ -2,15 +2,12 @@
 
 from __future__ import with_statement
 
-import os
 from logging.config import fileConfig
 
 from alembic import context
-from dotenv import load_dotenv
 from sqlalchemy import engine_from_config, pool
 from sqlalchemy import MetaData
-
-load_dotenv()
+from app.core.config import settings
 
 config = context.config
 
@@ -18,7 +15,7 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 # Prefer runtime settings, fallback to alembic.ini
-sqlalchemy_url = os.getenv("SQLALCHEMY_DATABASE_URI")
+sqlalchemy_url = settings.sqlalchemy_database_uri
 if sqlalchemy_url:
     config.set_main_option("sqlalchemy.url", sqlalchemy_url)
 
