@@ -6,6 +6,7 @@ from openai import OpenAIError
 from pypdf import PdfReader
 from pypdf.errors import PdfReadError
 
+from app.db import init_db, list_persisted_documents, record_ingestion_run, sync_documents_from_disk
 from app.core.config import settings
 from app.services.chunking import chunk_text
 from app.services.embeddings import embed_text
@@ -22,6 +23,28 @@ MAX_UPLOAD_BYTES = settings.max_upload_bytes
 ADMIN_API_KEY = settings.admin_api_key
 
 vector_store = None
+
+
+def _indexed_chunks_by_source() -> dict[str, int]:
+    if vector_store is None:
+        return {}
+    counts: dict[str, int] = {}
+    for item in vector_store.metadata:
+        source = item.get("source")
+        if not isinstance(source, str):
+            continue
+        counts[source] = counts.get(source, 0) + 1
+    return counts
+
+
+def _persist_index_state(summary: dict, status: str, error_message: str | None = None) -> None:
+    sync_documents_from_disk(DATA_DIR, ALLOWED_EXTENSIONS, _indexed_chunks_by_source())
+    record_ingestion_run(
+        files_count=int(summary.get("files", 0)),
+        chunks_count=int(summary.get("chunks", 0)),
+        status=status,
+        error_message=error_message,
+    )
 
 
 def _raise_processing_http_error(exc: Exception) -> None:
@@ -127,6 +150,7 @@ def _rebuild_index_from_data() -> dict:
 @app.on_event("startup")
 def on_startup() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
+    init_db()
     _load_existing_index()
 
 
@@ -165,7 +189,9 @@ async def upload_documents(
 
     try:
         summary = _rebuild_index_from_data()
+        _persist_index_state(summary, status="success")
     except Exception as exc:
+        _persist_index_state({"files": 0, "chunks": 0}, status="failed", error_message=str(exc))
         _raise_processing_http_error(exc)
     return {
         "uploaded": uploaded,
@@ -177,7 +203,9 @@ async def upload_documents(
 def reindex_documents(_: None = Depends(require_admin)):
     try:
         summary = _rebuild_index_from_data()
+        _persist_index_state(summary, status="success")
     except Exception as exc:
+        _persist_index_state({"files": 0, "chunks": 0}, status="failed", error_message=str(exc))
         _raise_processing_http_error(exc)
     return {"reindexed": summary}
 
@@ -185,6 +213,15 @@ def reindex_documents(_: None = Depends(require_admin)):
 @app.get("/admin/documents")
 def list_documents(_: None = Depends(require_admin)):
     DATA_DIR.mkdir(parents=True, exist_ok=True)
+    persisted = list_persisted_documents()
+    if persisted:
+        files = [str(row["filename"]) for row in persisted]
+        indexed_chunks = sum(int(row["indexed_chunks"]) for row in persisted)
+        return {
+            "documents": files,
+            "indexed_chunks": indexed_chunks,
+        }
+
     files = sorted(
         [
             path.name
