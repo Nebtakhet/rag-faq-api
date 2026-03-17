@@ -94,6 +94,7 @@ def test_list_documents_reports_files_and_chunk_count(monkeypatch, tmp_path: Pat
 
     monkeypatch.setattr(main, "DATA_DIR", tmp_path)
     monkeypatch.setattr(main, "vector_store", DummyStore())
+    monkeypatch.setattr(main, "list_persisted_documents", lambda: [])
 
     payload = main.list_documents(None)
 
@@ -106,6 +107,7 @@ def test_list_documents_with_no_vector_store(monkeypatch, tmp_path: Path) -> Non
 
     monkeypatch.setattr(main, "DATA_DIR", tmp_path)
     monkeypatch.setattr(main, "vector_store", None)
+    monkeypatch.setattr(main, "list_persisted_documents", lambda: [])
 
     payload = main.list_documents(None)
 
@@ -134,6 +136,7 @@ def test_on_startup_creates_data_dir_and_loads_index(monkeypatch, tmp_path: Path
     called = {"load": False}
 
     monkeypatch.setattr(main, "DATA_DIR", data_dir)
+    monkeypatch.setattr(main, "init_db", lambda: None)
     monkeypatch.setattr(main, "_load_existing_index", lambda: called.__setitem__("load", True))
 
     main.on_startup()
@@ -182,6 +185,7 @@ def make_upload(filename: str, payload: bytes) -> UploadFile:
 @pytest.mark.anyio
 async def test_upload_documents_rejects_unsupported_file(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(main, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(main, "_persist_index_state", lambda *_args, **_kwargs: None)
 
     with pytest.raises(HTTPException, match="Unsupported file type"):
         await main.upload_documents(files=[make_upload("bad.docx", b"x")], _=None)
@@ -202,6 +206,7 @@ async def test_upload_documents_accepts_pdf(monkeypatch, tmp_path: Path) -> None
     monkeypatch.setattr(main, "MAX_UPLOAD_BYTES", 100)
     monkeypatch.setattr(main.settings, "max_upload_bytes", 100)
     monkeypatch.setattr(main, "_rebuild_index_from_data", lambda: {"files": 1, "chunks": 1})
+    monkeypatch.setattr(main, "_persist_index_state", lambda *_args, **_kwargs: None)
 
     payload = await main.upload_documents(files=[make_upload("doc.pdf", b"%PDF-1.4")], _=None)
 
@@ -214,6 +219,7 @@ async def test_upload_documents_rejects_large_file(monkeypatch, tmp_path: Path) 
     monkeypatch.setattr(main, "DATA_DIR", tmp_path)
     monkeypatch.setattr(main, "MAX_UPLOAD_BYTES", 3)
     monkeypatch.setattr(main.settings, "max_upload_bytes", 3)
+    monkeypatch.setattr(main, "_persist_index_state", lambda *_args, **_kwargs: None)
 
     with pytest.raises(HTTPException, match="File too large"):
         await main.upload_documents(files=[make_upload("ok.txt", b"1234")], _=None)
@@ -225,6 +231,7 @@ async def test_upload_documents_success(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(main, "MAX_UPLOAD_BYTES", 100)
     monkeypatch.setattr(main.settings, "max_upload_bytes", 100)
     monkeypatch.setattr(main, "_rebuild_index_from_data", lambda: {"files": 1, "chunks": 1})
+    monkeypatch.setattr(main, "_persist_index_state", lambda *_args, **_kwargs: None)
 
     payload = await main.upload_documents(files=[make_upload("ok.txt", b"hello")], _=None)
 
@@ -237,6 +244,7 @@ async def test_upload_documents_reports_missing_openai_key(monkeypatch, tmp_path
     monkeypatch.setattr(main, "DATA_DIR", tmp_path)
     monkeypatch.setattr(main, "MAX_UPLOAD_BYTES", 100)
     monkeypatch.setattr(main.settings, "max_upload_bytes", 100)
+    monkeypatch.setattr(main, "_persist_index_state", lambda *_args, **_kwargs: None)
 
     def fail_rebuild() -> dict:
         raise RuntimeError("OPENAI_API_KEY is not set")
@@ -252,6 +260,7 @@ async def test_upload_documents_reports_openai_failure(monkeypatch, tmp_path: Pa
     monkeypatch.setattr(main, "DATA_DIR", tmp_path)
     monkeypatch.setattr(main, "MAX_UPLOAD_BYTES", 100)
     monkeypatch.setattr(main.settings, "max_upload_bytes", 100)
+    monkeypatch.setattr(main, "_persist_index_state", lambda *_args, **_kwargs: None)
 
     def fail_rebuild() -> dict:
         raise OpenAIError("boom")
@@ -260,3 +269,32 @@ async def test_upload_documents_reports_openai_failure(monkeypatch, tmp_path: Pa
 
     with pytest.raises(HTTPException, match="Document indexing failed while calling OpenAI"):
         await main.upload_documents(files=[make_upload("ok.txt", b"hello")], _=None)
+
+
+def test_list_documents_uses_persisted_rows(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(main, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(
+        main,
+        "list_persisted_documents",
+        lambda: [
+            {
+                "filename": "faq.txt",
+                "extension": ".txt",
+                "size_bytes": 42,
+                "indexed_chunks": 3,
+            },
+            {
+                "filename": "guide.pdf",
+                "extension": ".pdf",
+                "size_bytes": 100,
+                "indexed_chunks": 5,
+            },
+        ],
+    )
+
+    payload = main.list_documents(None)
+
+    assert payload == {
+        "documents": ["faq.txt", "guide.pdf"],
+        "indexed_chunks": 8,
+    }
