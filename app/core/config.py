@@ -13,6 +13,14 @@ class Settings(BaseSettings):
     openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")
     admin_api_key: str = Field(default="", alias="ADMIN_API_KEY")
     max_upload_bytes: int = Field(default=5 * 1024 * 1024, alias="MAX_UPLOAD_BYTES", ge=1)
+    ingestion_chunk_size: int = Field(default=1000, alias="INGESTION_CHUNK_SIZE", ge=100)
+    ingestion_chunk_overlap: int = Field(default=200, alias="INGESTION_CHUNK_OVERLAP", ge=0)
+    ingestion_min_alpha_ratio: float = Field(
+        default=0.15,
+        alias="INGESTION_MIN_ALPHA_RATIO",
+        ge=0.0,
+        le=1.0,
+    )
 
     sqlalchemy_database_uri: str | None = Field(default=None, alias="SQLALCHEMY_DATABASE_URI")
     redis_url: str | None = Field(default=None, alias="REDIS_URL")
