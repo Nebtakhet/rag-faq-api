@@ -8,7 +8,7 @@ from pypdf.errors import PdfReadError
 
 from app.db import init_db, list_persisted_documents, record_ingestion_run, sync_documents_from_disk
 from app.core.config import settings
-from app.services.chunking import chunk_text
+from app.services.chunking import prepare_chunks
 from app.services.embeddings import embed_text
 from app.services.rag import generate_answer
 from app.storage.vector_store import VectorStore
@@ -80,7 +80,13 @@ def _read_text_file(file_path: Path) -> str:
 
 def _read_pdf_file(file_path: Path) -> str:
     reader = PdfReader(str(file_path))
-    return "\n".join(page_text for page in reader.pages if (page_text := page.extract_text()))
+    pages = []
+    for page_number, page in enumerate(reader.pages, start=1):
+        page_text = (page.extract_text() or "").strip()
+        if not page_text:
+            continue
+        pages.append(f"[Page {page_number}]\n{page_text}")
+    return "\n\n".join(pages)
 
 
 def _read_document(file_path: Path) -> str:
@@ -116,7 +122,12 @@ def _rebuild_index_from_data() -> dict:
         if not text.strip():
             continue
 
-        chunks = chunk_text(text)
+        chunks = prepare_chunks(
+            text,
+            chunk_size=settings.ingestion_chunk_size,
+            overlap=settings.ingestion_chunk_overlap,
+            min_alpha_ratio=settings.ingestion_min_alpha_ratio,
+        )
         if not chunks:
             continue
 
