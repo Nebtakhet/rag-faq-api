@@ -23,6 +23,16 @@ Core flow:
 - Persistent metadata in SQL database (`documents`, `ingestion_runs`)
 - Supported file types: `.txt`, `.md`, `.pdf`
 
+## Ingestion Behavior
+
+- Uploaded files are written to `data/`.
+- Upload and reindex both trigger a full index rebuild from all supported files in `data/`.
+- Files that extract to empty text are skipped during indexing.
+- Text is normalized before chunking (line-ending cleanup, PDF hyphen-wrap fixes, whitespace cleanup).
+- Chunks are quality-filtered and deduplicated before embedding.
+- PDF chunks include page markers (for example, `[Page 3]`) to improve answer traceability.
+- After each run, document metadata and run status are saved in the SQL database.
+
 ## Requirements
 
 - Python 3.11+
@@ -57,6 +67,18 @@ ADMIN_API_KEY=my-admin-secret
 MAX_UPLOAD_BYTES=5242880
 ```
 
+Optional ingestion quality tuning:
+
+```bash
+INGESTION_CHUNK_SIZE=1000
+INGESTION_CHUNK_OVERLAP=200
+INGESTION_MIN_ALPHA_RATIO=0.15
+```
+
+- `INGESTION_CHUNK_SIZE`: chunk length target (minimum allowed by config validation: 100).
+- `INGESTION_CHUNK_OVERLAP`: overlap between adjacent chunks.
+- `INGESTION_MIN_ALPHA_RATIO`: filters low-signal chunks (too many symbols/numbers).
+
 Optional keys in `.env.example` are also available for migration/docker setups (`SQLALCHEMY_DATABASE_URI`, `REDIS_URL`, etc.).
 
 Database behavior:
@@ -76,6 +98,14 @@ make run
 http://127.0.0.1:8000/docs
 ```
 
+## Development Commands
+
+```bash
+make test        # run tests
+make quality     # lint + format-check + mypy
+make ci          # full local CI pipeline
+```
+
 ## API Endpoints
 
 - `GET /ask?question=...`
@@ -91,17 +121,17 @@ Upload documents:
 
 ```bash
 curl -X POST "http://127.0.0.1:8000/admin/documents" \
-	-H "X-Admin-Key: my-admin-secret" \
-	-F "files=@data/faq.txt" \
-	-F "files=@data/policies.md" \
-	-F "files=@data/reference.pdf"
+  -H "X-Admin-Key: my-admin-secret" \
+  -F "files=@data/faq.txt" \
+  -F "files=@data/policies.md" \
+  -F "files=@data/reference.pdf"
 ```
 
 List indexed docs:
 
 ```bash
 curl -X GET "http://127.0.0.1:8000/admin/documents" \
-	-H "X-Admin-Key: my-admin-secret"
+  -H "X-Admin-Key: my-admin-secret"
 ```
 
 Ask a question:
@@ -114,25 +144,25 @@ Reindex all files in `data/`:
 
 ```bash
 curl -X POST "http://127.0.0.1:8000/admin/reindex" \
-	-H "X-Admin-Key: my-admin-secret"
+  -H "X-Admin-Key: my-admin-secret"
 ```
 
 ## Data and Persistence
 
 - Uploaded source files are stored in `data/`
 - FAISS index is persisted to:
-	- `data/faiss.index`
-	- `data/faiss_metadata.json`
+  - `data/faiss.index`
+  - `data/faiss_metadata.json`
 - SQL persistence is stored in the configured DB URL (`SQLALCHEMY_DATABASE_URI`) or fallback `app.db`.
 
 ### Data Model
 
 - `documents`
-	- one row per supported file currently present in `data/`
-	- stores `filename`, `extension`, `size_bytes`, `indexed_chunks`, `updated_at`
+  - one row per supported file currently present in `data/`
+  - stores `filename`, `extension`, `size_bytes`, `indexed_chunks`, `updated_at`
 - `ingestion_runs`
-	- one row per upload/reindex execution
-	- stores `files_count`, `chunks_count`, `status`, `error_message`, `created_at`
+  - one row per upload/reindex execution
+  - stores `files_count`, `chunks_count`, `status`, `error_message`, `created_at`
 
 ### Runtime Persistence Flow
 
@@ -142,30 +172,39 @@ curl -X POST "http://127.0.0.1:8000/admin/reindex" \
 4. Document metadata is synchronized from disk into `documents`.
 5. `GET /admin/documents` reads persisted rows first, then falls back to disk scan if DB is empty.
 
+### Quality Pipeline Details
+
+1. Read document (`.txt`, `.md`, `.pdf`).
+2. Normalize extracted text.
+3. Build chunks using configured size/overlap.
+4. Remove empty, duplicated, and low-signal chunks.
+5. Generate embeddings for remaining chunks.
+6. Persist FAISS index and metadata.
+
 ## Architecture Layout
 
 ```text
 app/
-	core/
-		config.py         # typed settings from .env
-	db/
-		base.py           # SQLAlchemy base
-		models.py         # documents + ingestion_runs
-		persistence.py    # DB init/read/write helpers
-	services/
-		chunking.py
-		embeddings.py
-		rag.py
-	storage/
-		vector_store.py   # FAISS wrapper
-	main.py             # FastAPI routes and orchestration
+  core/
+    config.py         # typed settings from .env
+  db/
+    base.py           # SQLAlchemy base
+    models.py         # documents + ingestion_runs
+    persistence.py    # DB init/read/write helpers
+  services/
+    chunking.py
+    embeddings.py
+    rag.py
+  storage/
+    vector_store.py   # FAISS wrapper
+  main.py             # FastAPI routes and orchestration
 ```
 
 ## Common Errors
 
 - `{"detail":"OPENAI_API_KEY is not configured"}`:
-	- `.env` is missing or invalid.
+  - `.env` is missing or invalid.
 - `{"detail":"Document indexing failed while calling OpenAI. Check OPENAI_API_KEY."}`:
-	- OpenAI key is invalid, expired, or has no billing access.
+  - OpenAI key is invalid, expired, or has no billing access.
 - `{"detail":"Unsupported file type: ..."}`:
-	- Only `.txt`, `.md`, `.pdf` are accepted.
+  - Only `.txt`, `.md`, `.pdf` are accepted.
