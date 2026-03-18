@@ -72,7 +72,7 @@ def test_rebuild_index_from_data_indexes_supported_files(monkeypatch, tmp_path: 
     monkeypatch.setattr(main, "DATA_DIR", tmp_path)
     monkeypatch.setattr(main, "INDEX_PATH", index_path)
     monkeypatch.setattr(main, "METADATA_PATH", metadata_path)
-    monkeypatch.setattr(main, "chunk_text", lambda text: [text, "extra"])
+    monkeypatch.setattr(main, "prepare_chunks", lambda text, **_kwargs: [text, "extra"])
     monkeypatch.setattr(main, "embed_text", lambda chunks: [[0.1, 0.2] for _ in chunks])
 
     summary = main._rebuild_index_from_data()
@@ -153,7 +153,7 @@ def test_rebuild_index_returns_zero_chunks_when_chunking_returns_none(
     monkeypatch.setattr(main, "DATA_DIR", tmp_path)
     monkeypatch.setattr(main, "INDEX_PATH", tmp_path / "faiss.index")
     monkeypatch.setattr(main, "METADATA_PATH", tmp_path / "faiss_metadata.json")
-    monkeypatch.setattr(main, "chunk_text", lambda _text: [])
+    monkeypatch.setattr(main, "prepare_chunks", lambda _text, **_kwargs: [])
 
     summary = main._rebuild_index_from_data()
 
@@ -169,7 +169,7 @@ def test_rebuild_index_returns_zero_chunks_when_embeddings_empty(
     monkeypatch.setattr(main, "DATA_DIR", tmp_path)
     monkeypatch.setattr(main, "INDEX_PATH", tmp_path / "faiss.index")
     monkeypatch.setattr(main, "METADATA_PATH", tmp_path / "faiss_metadata.json")
-    monkeypatch.setattr(main, "chunk_text", lambda _text: ["chunk"])
+    monkeypatch.setattr(main, "prepare_chunks", lambda _text, **_kwargs: ["chunk"])
     monkeypatch.setattr(main, "embed_text", lambda _chunks: [])
 
     summary = main._rebuild_index_from_data()
@@ -298,3 +298,97 @@ def test_list_documents_uses_persisted_rows(monkeypatch, tmp_path: Path) -> None
         "documents": ["faq.txt", "guide.pdf"],
         "indexed_chunks": 8,
     }
+
+
+def test_indexed_chunks_by_source_counts_only_string_sources(monkeypatch) -> None:
+    class DummyStore:
+        metadata = [
+            {"source": "a.txt"},
+            {"source": "a.txt"},
+            {"source": "b.txt"},
+            {"source": 123},
+            {},
+        ]
+
+    monkeypatch.setattr(main, "vector_store", DummyStore())
+
+    assert main._indexed_chunks_by_source() == {"a.txt": 2, "b.txt": 1}
+
+
+def test_persist_index_state_writes_documents_and_run(monkeypatch, tmp_path: Path) -> None:
+    class DummyStore:
+        metadata = [{"source": "a.txt"}, {"source": "a.txt"}, {"source": "b.md"}]
+
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(main, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(main, "vector_store", DummyStore())
+    monkeypatch.setattr(
+        main,
+        "sync_documents_from_disk",
+        lambda data_dir, allowed_extensions, indexed_chunks_by_source: captured.update(
+            {
+                "data_dir": data_dir,
+                "allowed": allowed_extensions,
+                "counts": indexed_chunks_by_source,
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        main,
+        "record_ingestion_run",
+        lambda **kwargs: captured.update({"run": kwargs}),
+    )
+
+    main._persist_index_state({"files": 2, "chunks": 3}, status="success")
+
+    assert captured["data_dir"] == tmp_path
+    assert captured["counts"] == {"a.txt": 2, "b.md": 1}
+    assert captured["run"] == {
+        "files_count": 2,
+        "chunks_count": 3,
+        "status": "success",
+        "error_message": None,
+    }
+
+
+def test_read_pdf_file_adds_page_markers(monkeypatch, tmp_path: Path) -> None:
+    pdf_path = tmp_path / "doc.pdf"
+    pdf_path.write_bytes(b"%PDF")
+
+    class DummyPage:
+        def __init__(self, text: str):
+            self._text = text
+
+        def extract_text(self) -> str:
+            return self._text
+
+    class DummyReader:
+        def __init__(self, _path: str):
+            self.pages = [DummyPage("Page one"), DummyPage(""), DummyPage("Page three")]
+
+    monkeypatch.setattr(main, "PdfReader", DummyReader)
+
+    text = main._read_pdf_file(pdf_path)
+
+    assert text == "[Page 1]\nPage one\n\n[Page 3]\nPage three"
+
+
+def test_reindex_documents_persists_failure_then_raises(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        main, "_rebuild_index_from_data", lambda: (_ for _ in ()).throw(RuntimeError("x"))
+    )
+    monkeypatch.setattr(
+        main,
+        "_persist_index_state",
+        lambda summary, status, error_message=None: captured.update(
+            {"summary": summary, "status": status, "error": error_message}
+        ),
+    )
+
+    with pytest.raises(RuntimeError):
+        main.reindex_documents(None)
+
+    assert captured["status"] == "failed"
+    assert captured["summary"] == {"files": 0, "chunks": 0}
