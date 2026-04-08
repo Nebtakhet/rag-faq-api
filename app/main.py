@@ -1,3 +1,4 @@
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated
 
@@ -13,8 +14,6 @@ from app.services.embeddings import embed_text
 from app.services.rag import generate_answer
 from app.storage.vector_store import VectorStore
 
-app = FastAPI()
-
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 INDEX_PATH = DATA_DIR / "faiss.index"
 METADATA_PATH = DATA_DIR / "faiss_metadata.json"
@@ -23,6 +22,21 @@ MAX_UPLOAD_BYTES = settings.max_upload_bytes
 ADMIN_API_KEY = settings.admin_api_key
 
 vector_store = None
+
+
+def on_startup() -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    init_db()
+    _load_existing_index()
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    on_startup()
+    yield
+
+
+app = FastAPI(lifespan=lifespan)
 
 
 def _indexed_chunks_by_source() -> dict[str, int]:
@@ -156,13 +170,6 @@ def _rebuild_index_from_data() -> dict:
     store.save(INDEX_PATH, METADATA_PATH)
     vector_store = store
     return {"files": len(files), "chunks": total_chunks}
-
-
-@app.on_event("startup")
-def on_startup() -> None:
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    init_db()
-    _load_existing_index()
 
 
 @app.get("/ask")
