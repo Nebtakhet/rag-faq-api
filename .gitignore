@@ -9,3 +9,4 @@ __pycache__/
 *.db
 .env
 *.secret
+/data/Unity_2D_Expanding_Box_Game_Tutorial.pdf
