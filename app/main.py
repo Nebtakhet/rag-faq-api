@@ -7,6 +7,7 @@ from openai import OpenAIError
 from pypdf import PdfReader
 from pypdf.errors import PdfReadError
 
+from app.api.dependencies import require_admin as _require_admin
 from app.db import init_db, list_persisted_documents, record_ingestion_run, sync_documents_from_disk
 from app.core.config import settings
 from app.services.chunking import prepare_chunks
@@ -75,11 +76,7 @@ def _raise_processing_http_error(exc: Exception) -> None:
 
 
 def require_admin(x_admin_key: Annotated[str | None, Header()] = None) -> None:
-    admin_api_key = settings.admin_api_key
-    if not admin_api_key:
-        raise HTTPException(status_code=500, detail="ADMIN_API_KEY is not configured")
-    if x_admin_key != admin_api_key:
-        raise HTTPException(status_code=403, detail="Invalid admin key")
+    _require_admin(x_admin_key)
 
 
 def _load_existing_index() -> None:
@@ -172,7 +169,6 @@ def _rebuild_index_from_data() -> dict:
     return {"files": len(files), "chunks": total_chunks}
 
 
-@app.get("/ask")
 def ask(question: str):
     if vector_store is None:
         raise HTTPException(status_code=400, detail="No indexed documents. Upload documents first.")
@@ -183,10 +179,9 @@ def ask(question: str):
     return {"answer": answer}
 
 
-@app.post("/admin/documents")
 async def upload_documents(
     files: list[UploadFile] = File(...),
-    _: None = Depends(require_admin),
+    _: None = Depends(_require_admin),
 ):
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     uploaded = []
@@ -217,8 +212,7 @@ async def upload_documents(
     }
 
 
-@app.post("/admin/reindex")
-def reindex_documents(_: None = Depends(require_admin)):
+def reindex_documents(_: None = Depends(_require_admin)):
     try:
         summary = _rebuild_index_from_data()
         _persist_index_state(summary, status="success")
@@ -228,8 +222,7 @@ def reindex_documents(_: None = Depends(require_admin)):
     return {"reindexed": summary}
 
 
-@app.get("/admin/documents")
-def list_documents(_: None = Depends(require_admin)):
+def list_documents(_: None = Depends(_require_admin)):
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     persisted = list_persisted_documents()
     if persisted:
@@ -256,3 +249,14 @@ def list_documents(_: None = Depends(require_admin)):
         "documents": files,
         "indexed_chunks": indexed_chunks,
     }
+
+
+def _register_routers() -> None:
+    from app.api.admin import router as admin_router
+    from app.api.public import router as public_router
+
+    app.include_router(public_router)
+    app.include_router(admin_router)
+
+
+_register_routers()
