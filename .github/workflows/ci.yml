@@ -45,4 +45,4 @@ jobs:
           alembic check
 
       - name: Tests + Coverage gate
-        run: pytest tests/ --cov=app --cov-report=term-missing --cov-fail-under=78
+        run: pytest tests/ --cov=app --cov-report=term-missing --cov-fail-under=90
