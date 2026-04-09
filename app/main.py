@@ -1,15 +1,31 @@
 from contextlib import asynccontextmanager
+from collections.abc import Sequence
+from collections.abc import Awaitable
+from collections.abc import Callable
+import logging
 from pathlib import Path
+from time import perf_counter
 from typing import Annotated
+from uuid import uuid4
 
-from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Header, HTTPException, Request, UploadFile
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse, Response
 from openai import OpenAIError
 from pypdf import PdfReader
 from pypdf.errors import PdfReadError
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from app.api.dependencies import require_admin as _require_admin
 from app.db import init_db, list_persisted_documents, record_ingestion_run, sync_documents_from_disk
 from app.core.config import settings
+from app.core.logging import configure_logging, reset_request_id, set_request_id
+from app.core.metrics import IN_PROGRESS, metrics_payload, record_request
+from app.core.rate_limit import limiter
 from app.services.chunking import prepare_chunks
 from app.services.embeddings import embed_text
 from app.services.rag import generate_answer
@@ -23,6 +39,9 @@ MAX_UPLOAD_BYTES = settings.max_upload_bytes
 ADMIN_API_KEY = settings.admin_api_key
 
 vector_store = None
+
+configure_logging()
+logger = logging.getLogger("app.request")
 
 
 def on_startup() -> None:
@@ -38,6 +57,121 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)  # type: ignore[arg-type]
+app.add_middleware(SlowAPIMiddleware)
+
+
+@app.middleware("http")
+async def add_observability_headers(
+    request: Request,
+    call_next: Callable[[Request], Awaitable[Response]],
+) -> Response:
+    request_id = request.headers.get("X-Request-ID") or uuid4().hex
+    token = set_request_id(request_id)
+    start = perf_counter()
+    IN_PROGRESS.inc()
+    route_path = request.url.path
+    status_code = 500
+    try:
+        response = await call_next(request)
+        status_code = response.status_code
+    except Exception:
+        duration_ms = (perf_counter() - start) * 1000
+        record_request(
+            method=request.method,
+            path=route_path,
+            status_code=status_code,
+            duration_seconds=duration_ms / 1000,
+        )
+        logger.exception(
+            "request.failed",
+            extra={
+                "method": request.method,
+                "path": request.url.path,
+                "duration_ms": round(duration_ms, 2),
+            },
+        )
+        reset_request_id(token)
+        IN_PROGRESS.dec()
+        raise
+
+    duration_ms = (perf_counter() - start) * 1000
+    route = request.scope.get("route")
+    if route is not None and hasattr(route, "path"):
+        route_path = route.path
+    record_request(
+        method=request.method,
+        path=route_path,
+        status_code=status_code,
+        duration_seconds=duration_ms / 1000,
+    )
+    response.headers["X-Process-Time-Ms"] = f"{duration_ms:.2f}"
+    response.headers["X-Request-ID"] = request_id
+    logger.info(
+        "request.completed",
+        extra={
+            "method": request.method,
+            "path": request.url.path,
+            "status_code": response.status_code,
+            "duration_ms": round(duration_ms, 2),
+        },
+    )
+    reset_request_id(token)
+    IN_PROGRESS.dec()
+    return response
+
+
+def error_payload(
+    detail: str,
+    code: str,
+    errors: Sequence[object] | None = None,
+) -> dict[str, object]:
+    payload: dict[str, object] = {"detail": detail, "code": code}
+    if errors is not None:
+        payload["errors"] = errors
+    return payload
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(
+    request: Request,
+    exc: RequestValidationError,
+) -> JSONResponse:
+    errors = jsonable_encoder(exc.errors())
+    return JSONResponse(
+        status_code=422,
+        content=error_payload(
+            detail="Validation error",
+            code="validation_error",
+            errors=errors,
+        ),
+    )
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException) -> JSONResponse:
+    code = "auth_error" if exc.status_code in (401, 403) else "http_error"
+    return JSONResponse(
+        status_code=exc.status_code,
+        content=error_payload(detail=str(exc.detail), code=code),
+    )
+
+
+@app.exception_handler(IntegrityError)
+async def integrity_exception_handler(request: Request, exc: IntegrityError) -> JSONResponse:
+    return JSONResponse(
+        status_code=409,
+        content=error_payload(detail="Database integrity error", code="db_integrity_error"),
+    )
+
+
+@app.exception_handler(SQLAlchemyError)
+async def sqlalchemy_exception_handler(request: Request, exc: SQLAlchemyError) -> JSONResponse:
+    return JSONResponse(
+        status_code=500,
+        content=error_payload(detail="Database error", code="db_error"),
+    )
 
 
 def _indexed_chunks_by_source() -> dict[str, int]:
@@ -169,7 +303,8 @@ def _rebuild_index_from_data() -> dict:
     return {"files": len(files), "chunks": total_chunks}
 
 
-def ask(question: str):
+@limiter.limit(settings.ask_rate_limit)
+def ask(request: Request, question: str):
     if vector_store is None:
         raise HTTPException(status_code=400, detail="No indexed documents. Upload documents first.")
     try:
@@ -180,6 +315,7 @@ def ask(question: str):
 
 
 async def upload_documents(
+    request: Request,
     files: list[UploadFile] = File(...),
     _: None = Depends(_require_admin),
 ):
@@ -212,7 +348,8 @@ async def upload_documents(
     }
 
 
-def reindex_documents(_: None = Depends(_require_admin)):
+@limiter.limit(settings.admin_rate_limit)
+def reindex_documents(request: Request, _: None = Depends(_require_admin)):
     try:
         summary = _rebuild_index_from_data()
         _persist_index_state(summary, status="success")
@@ -222,7 +359,8 @@ def reindex_documents(_: None = Depends(_require_admin)):
     return {"reindexed": summary}
 
 
-def list_documents(_: None = Depends(_require_admin)):
+@limiter.limit(settings.admin_rate_limit)
+def list_documents(request: Request, _: None = Depends(_require_admin)):
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     persisted = list_persisted_documents()
     if persisted:
@@ -251,6 +389,9 @@ def list_documents(_: None = Depends(_require_admin)):
     }
 
 
+upload_documents = limiter.limit(settings.admin_rate_limit)(upload_documents)
+
+
 def _register_routers() -> None:
     from app.api.admin import router as admin_router
     from app.api.public import router as public_router
@@ -260,3 +401,14 @@ def _register_routers() -> None:
 
 
 _register_routers()
+
+
+@app.get("/metrics")
+async def metrics() -> Response:
+    payload, content_type = metrics_payload()
+    return Response(content=payload, media_type=content_type)
+
+
+@app.get("/health/live")
+async def health_live() -> dict[str, str]:
+    return {"status": "ok"}
