@@ -13,6 +13,16 @@ class Settings(BaseSettings):
     openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")
     admin_api_key: str = Field(default="", alias="ADMIN_API_KEY")
     max_upload_bytes: int = Field(default=5 * 1024 * 1024, alias="MAX_UPLOAD_BYTES", ge=1)
+    ask_rate_limit: str = Field(default="300/minute", alias="ASK_RATE_LIMIT")
+    admin_rate_limit: str = Field(default="120/minute", alias="ADMIN_RATE_LIMIT")
+    rate_limit_trust_proxy_headers: bool = Field(
+        default=False,
+        alias="RATE_LIMIT_TRUST_PROXY_HEADERS",
+    )
+    rate_limit_trusted_proxy_ips: list[str] = Field(
+        default_factory=list,
+        alias="RATE_LIMIT_TRUSTED_PROXY_IPS",
+    )
     ingestion_chunk_size: int = Field(default=1000, alias="INGESTION_CHUNK_SIZE", ge=100)
     ingestion_chunk_overlap: int = Field(default=200, alias="INGESTION_CHUNK_OVERLAP", ge=0)
     ingestion_min_alpha_ratio: float = Field(
