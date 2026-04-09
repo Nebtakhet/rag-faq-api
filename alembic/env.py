@@ -6,8 +6,9 @@ from logging.config import fileConfig
 
 from alembic import context
 from sqlalchemy import engine_from_config, pool
-from sqlalchemy import MetaData
+
 from app.core.config import settings
+from app.db.base import Base
 
 config = context.config
 
@@ -19,8 +20,8 @@ sqlalchemy_url = settings.sqlalchemy_database_uri
 if sqlalchemy_url:
     config.set_main_option("sqlalchemy.url", sqlalchemy_url)
 
-# Metadata for autogenerate. This project currently has no SQLAlchemy models module.
-target_metadata = MetaData()
+# Metadata for autogenerate.
+target_metadata = Base.metadata
 
 
 def run_migrations_offline() -> None:
