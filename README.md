@@ -22,6 +22,12 @@ Core flow:
 - Persistent FAISS index on disk
 - Persistent metadata in SQL database (`documents`, `ingestion_runs`)
 - Supported file types: `.txt`, `.md`, `.pdf`
+- Request observability headers: `X-Request-ID`, `X-Process-Time-Ms`
+- Structured JSON request logging with per-request correlation ID
+- Prometheus metrics endpoint at `GET /metrics`
+- Liveness endpoint at `GET /health/live`
+- Standardized error payloads for validation, HTTP, and DB errors
+- Redis-backed rate limiting (with in-memory fallback)
 
 ## Ingestion Behavior
 
@@ -79,6 +85,20 @@ INGESTION_MIN_ALPHA_RATIO=0.15
 - `INGESTION_CHUNK_OVERLAP`: overlap between adjacent chunks.
 - `INGESTION_MIN_ALPHA_RATIO`: filters low-signal chunks (too many symbols/numbers).
 
+Optional rate limiting controls:
+
+```bash
+ASK_RATE_LIMIT=300/minute
+ADMIN_RATE_LIMIT=120/minute
+RATE_LIMIT_TRUST_PROXY_HEADERS=false
+RATE_LIMIT_TRUSTED_PROXY_IPS=127.0.0.1
+```
+
+- `ASK_RATE_LIMIT`: limit for `GET /ask`.
+- `ADMIN_RATE_LIMIT`: shared limit for admin endpoints (`/admin/*`).
+- `RATE_LIMIT_TRUST_PROXY_HEADERS`: trust proxy headers for client IP extraction.
+- `RATE_LIMIT_TRUSTED_PROXY_IPS`: proxy IP allowlist used when trusting `X-Forwarded-For`.
+
 Optional keys in `.env.example` are also available for migration/docker setups (`SQLALCHEMY_DATABASE_URI`, `REDIS_URL`, etc.).
 
 Database behavior:
@@ -112,8 +132,21 @@ make ci          # full local CI pipeline
 - `POST /admin/documents`
 - `POST /admin/reindex`
 - `GET /admin/documents`
+- `GET /metrics`
+- `GET /health/live`
 
 Admin endpoints require header `X-Admin-Key: <ADMIN_API_KEY>`.
+
+All responses include:
+
+- `X-Request-ID`: request correlation ID (client-provided or generated)
+- `X-Process-Time-Ms`: server-side request latency in milliseconds
+
+Rate limiting:
+
+- `GET /ask` is limited by `ASK_RATE_LIMIT`
+- `/admin/*` endpoints are limited by `ADMIN_RATE_LIMIT`
+- Exceeded limits return `HTTP 429`
 
 ## Example Usage
 
@@ -202,9 +235,14 @@ app/
 
 ## Common Errors
 
-- `{"detail":"OPENAI_API_KEY is not configured"}`:
+- `{"detail":"OPENAI_API_KEY is not configured","code":"http_error"}`:
   - `.env` is missing or invalid.
-- `{"detail":"Document indexing failed while calling OpenAI. Check OPENAI_API_KEY."}`:
+- `{"detail":"Document indexing failed while calling OpenAI. Check OPENAI_API_KEY.","code":"http_error"}`:
   - OpenAI key is invalid, expired, or has no billing access.
-- `{"detail":"Unsupported file type: ..."}`:
+- `{"detail":"Unsupported file type: ...","code":"http_error"}`:
   - Only `.txt`, `.md`, `.pdf` are accepted.
+
+Validation and auth errors are standardized:
+
+- Validation failure: `{"detail":"Validation error","code":"validation_error","errors":[...]}`
+- Auth/admin failures (`401`/`403`): `{"detail":"...","code":"auth_error"}`
