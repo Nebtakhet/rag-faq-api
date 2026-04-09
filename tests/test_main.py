@@ -4,8 +4,26 @@ from io import BytesIO
 import pytest
 from fastapi import HTTPException, UploadFile
 from openai import OpenAIError
+from starlette.requests import Request
 
 from app import main
+
+
+def make_request(path: str = "/") -> Request:
+    return Request(
+        {
+            "type": "http",
+            "http_version": "1.1",
+            "method": "GET",
+            "scheme": "http",
+            "path": path,
+            "raw_path": path.encode("utf-8"),
+            "query_string": b"",
+            "headers": [],
+            "client": ("127.0.0.1", 12345),
+            "server": ("testserver", 80),
+        }
+    )
 
 
 def test_require_admin_missing_config(monkeypatch) -> None:
@@ -34,14 +52,14 @@ def test_ask_requires_vector_store(monkeypatch) -> None:
     monkeypatch.setattr(main, "vector_store", None)
 
     with pytest.raises(HTTPException, match="No indexed documents"):
-        main.ask("hello")
+        main.ask(make_request("/ask"), "hello")
 
 
 def test_ask_returns_generated_answer(monkeypatch) -> None:
     monkeypatch.setattr(main, "vector_store", object())
     monkeypatch.setattr(main, "generate_answer", lambda _q, _s: "ok")
 
-    assert main.ask("hello") == {"answer": "ok"}
+    assert main.ask(make_request("/ask"), "hello") == {"answer": "ok"}
 
 
 def test_rebuild_index_from_data_empty_dir_cleans_files(monkeypatch, tmp_path: Path) -> None:
@@ -96,7 +114,7 @@ def test_list_documents_reports_files_and_chunk_count(monkeypatch, tmp_path: Pat
     monkeypatch.setattr(main, "vector_store", DummyStore())
     monkeypatch.setattr(main, "list_persisted_documents", lambda: [])
 
-    payload = main.list_documents(None)
+    payload = main.list_documents(make_request("/admin/documents"))
 
     assert payload["documents"] == ["a.txt", "b.md", "guide.pdf"]
     assert payload["indexed_chunks"] == 3
@@ -109,7 +127,7 @@ def test_list_documents_with_no_vector_store(monkeypatch, tmp_path: Path) -> Non
     monkeypatch.setattr(main, "vector_store", None)
     monkeypatch.setattr(main, "list_persisted_documents", lambda: [])
 
-    payload = main.list_documents(None)
+    payload = main.list_documents(make_request("/admin/documents"))
 
     assert payload["documents"] == ["a.txt"]
     assert payload["indexed_chunks"] == 0
@@ -188,7 +206,11 @@ async def test_upload_documents_rejects_unsupported_file(monkeypatch, tmp_path: 
     monkeypatch.setattr(main, "_persist_index_state", lambda *_args, **_kwargs: None)
 
     with pytest.raises(HTTPException, match="Unsupported file type"):
-        await main.upload_documents(files=[make_upload("bad.docx", b"x")], _=None)
+        await main.upload_documents(
+            request=make_request("/admin/documents"),
+            files=[make_upload("bad.docx", b"x")],
+            _=None,
+        )
 
 
 def test_read_document_uses_pdf_reader(monkeypatch, tmp_path: Path) -> None:
@@ -208,7 +230,11 @@ async def test_upload_documents_accepts_pdf(monkeypatch, tmp_path: Path) -> None
     monkeypatch.setattr(main, "_rebuild_index_from_data", lambda: {"files": 1, "chunks": 1})
     monkeypatch.setattr(main, "_persist_index_state", lambda *_args, **_kwargs: None)
 
-    payload = await main.upload_documents(files=[make_upload("doc.pdf", b"%PDF-1.4")], _=None)
+    payload = await main.upload_documents(
+        request=make_request("/admin/documents"),
+        files=[make_upload("doc.pdf", b"%PDF-1.4")],
+        _=None,
+    )
 
     assert payload == {"uploaded": ["doc.pdf"], "reindexed": {"files": 1, "chunks": 1}}
     assert (tmp_path / "doc.pdf").read_bytes() == b"%PDF-1.4"
@@ -222,7 +248,11 @@ async def test_upload_documents_rejects_large_file(monkeypatch, tmp_path: Path) 
     monkeypatch.setattr(main, "_persist_index_state", lambda *_args, **_kwargs: None)
 
     with pytest.raises(HTTPException, match="File too large"):
-        await main.upload_documents(files=[make_upload("ok.txt", b"1234")], _=None)
+        await main.upload_documents(
+            request=make_request("/admin/documents"),
+            files=[make_upload("ok.txt", b"1234")],
+            _=None,
+        )
 
 
 @pytest.mark.anyio
@@ -233,7 +263,11 @@ async def test_upload_documents_success(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(main, "_rebuild_index_from_data", lambda: {"files": 1, "chunks": 1})
     monkeypatch.setattr(main, "_persist_index_state", lambda *_args, **_kwargs: None)
 
-    payload = await main.upload_documents(files=[make_upload("ok.txt", b"hello")], _=None)
+    payload = await main.upload_documents(
+        request=make_request("/admin/documents"),
+        files=[make_upload("ok.txt", b"hello")],
+        _=None,
+    )
 
     assert payload == {"uploaded": ["ok.txt"], "reindexed": {"files": 1, "chunks": 1}}
     assert (tmp_path / "ok.txt").read_bytes() == b"hello"
@@ -252,7 +286,11 @@ async def test_upload_documents_reports_missing_openai_key(monkeypatch, tmp_path
     monkeypatch.setattr(main, "_rebuild_index_from_data", fail_rebuild)
 
     with pytest.raises(HTTPException, match="OPENAI_API_KEY is not configured"):
-        await main.upload_documents(files=[make_upload("ok.txt", b"hello")], _=None)
+        await main.upload_documents(
+            request=make_request("/admin/documents"),
+            files=[make_upload("ok.txt", b"hello")],
+            _=None,
+        )
 
 
 @pytest.mark.anyio
@@ -268,7 +306,11 @@ async def test_upload_documents_reports_openai_failure(monkeypatch, tmp_path: Pa
     monkeypatch.setattr(main, "_rebuild_index_from_data", fail_rebuild)
 
     with pytest.raises(HTTPException, match="Document indexing failed while calling OpenAI"):
-        await main.upload_documents(files=[make_upload("ok.txt", b"hello")], _=None)
+        await main.upload_documents(
+            request=make_request("/admin/documents"),
+            files=[make_upload("ok.txt", b"hello")],
+            _=None,
+        )
 
 
 def test_list_documents_uses_persisted_rows(monkeypatch, tmp_path: Path) -> None:
@@ -292,7 +334,7 @@ def test_list_documents_uses_persisted_rows(monkeypatch, tmp_path: Path) -> None
         ],
     )
 
-    payload = main.list_documents(None)
+    payload = main.list_documents(make_request("/admin/documents"))
 
     assert payload == {
         "documents": ["faq.txt", "guide.pdf"],
@@ -388,7 +430,7 @@ def test_reindex_documents_persists_failure_then_raises(monkeypatch) -> None:
     )
 
     with pytest.raises(RuntimeError):
-        main.reindex_documents(None)
+        main.reindex_documents(make_request("/admin/reindex"))
 
     assert captured["status"] == "failed"
     assert captured["summary"] == {"files": 0, "chunks": 0}
