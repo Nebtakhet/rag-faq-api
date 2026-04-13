@@ -101,6 +101,13 @@ RATE_LIMIT_TRUSTED_PROXY_IPS=127.0.0.1
 
 Optional keys in `.env.example` are also available for migration/docker setups (`SQLALCHEMY_DATABASE_URI`, `REDIS_URL`, etc.).
 
+Deployment note:
+
+- Rate limiting uses Redis when `REDIS_URL` is set.
+- If `REDIS_URL` is omitted, the app falls back to in-memory rate limiting.
+- In-memory rate limiting is fine for local development, but it does not persist across multiple API instances.
+- For production or any horizontally scaled deployment, point `REDIS_URL` at a shared Redis service.
+
 Database behavior:
 
 - If `SQLALCHEMY_DATABASE_URI` is set, that database is used.
@@ -147,6 +154,15 @@ Rate limiting:
 - `GET /ask` is limited by `ASK_RATE_LIMIT`
 - `/admin/*` endpoints are limited by `ADMIN_RATE_LIMIT`
 - Exceeded limits return `HTTP 429`
+- Rate-limited responses include `{"error":"Rate limit exceeded: ..."}`
+
+Example rate-limited response:
+
+```bash
+curl -i "http://127.0.0.1:8000/ask?question=What%20does%20this%20project%20do%3F"
+```
+
+If you repeat that request too quickly, the API responds with `429 Too Many Requests`.
 
 ## Example Usage
 
