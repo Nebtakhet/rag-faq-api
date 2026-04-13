@@ -20,7 +20,7 @@ dependencies = [
 	"redis>=5.0.0",
 	"openai",
 	"faiss-cpu",
-    "pypdf>=5.4.0",
+    "pypdf>=6.10.0",
 	"python-dotenv",
 ]
 
