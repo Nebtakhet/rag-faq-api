@@ -3,6 +3,7 @@ from io import BytesIO
 
 import pytest
 from fastapi import HTTPException, UploadFile
+from fastapi.testclient import TestClient
 from openai import OpenAIError
 from starlette.requests import Request
 
@@ -24,6 +25,10 @@ def make_request(path: str = "/") -> Request:
             "server": ("testserver", 80),
         }
     )
+
+
+def reset_rate_limits() -> None:
+    main.limiter._storage.reset()
 
 
 def test_require_admin_missing_config(monkeypatch) -> None:
@@ -60,6 +65,21 @@ def test_ask_returns_generated_answer(monkeypatch) -> None:
     monkeypatch.setattr(main, "generate_answer", lambda _q, _s: "ok")
 
     assert main.ask(make_request("/ask"), "hello") == {"answer": "ok"}
+
+
+def test_ask_endpoint_returns_429_after_limit(monkeypatch) -> None:
+    reset_rate_limits()
+    monkeypatch.setattr(main, "vector_store", object())
+    monkeypatch.setattr(main, "generate_answer", lambda _q, _s: "ok")
+
+    with TestClient(main.app) as client:
+        for _ in range(300):
+            response = client.get("/ask", params={"question": "hello"})
+            assert response.status_code == 200
+
+        response = client.get("/ask", params={"question": "hello"})
+        assert response.status_code == 429
+        assert response.json()["error"] == "Rate limit exceeded: 300 per 1 minute"
 
 
 def test_rebuild_index_from_data_empty_dir_cleans_files(monkeypatch, tmp_path: Path) -> None:
@@ -131,6 +151,24 @@ def test_list_documents_with_no_vector_store(monkeypatch, tmp_path: Path) -> Non
 
     assert payload["documents"] == ["a.txt"]
     assert payload["indexed_chunks"] == 0
+
+
+def test_admin_endpoint_returns_429_after_limit(monkeypatch, tmp_path: Path) -> None:
+    reset_rate_limits()
+    monkeypatch.setattr(main, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(main.settings, "admin_api_key", "secret")
+    monkeypatch.setattr(main, "ADMIN_API_KEY", "secret")
+    monkeypatch.setattr(main, "list_persisted_documents", lambda: [])
+
+    with TestClient(main.app) as client:
+        headers = {"X-Admin-Key": "secret"}
+        for _ in range(120):
+            response = client.get("/admin/documents", headers=headers)
+            assert response.status_code == 200
+
+        response = client.get("/admin/documents", headers=headers)
+        assert response.status_code == 429
+        assert response.json()["error"] == "Rate limit exceeded: 120 per 1 minute"
 
 
 def test_load_existing_index_sets_vector_store(monkeypatch, tmp_path: Path) -> None:
