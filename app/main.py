@@ -11,6 +11,7 @@ from uuid import uuid4
 from fastapi import Depends, FastAPI, File, Header, HTTPException, Request, UploadFile
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from openai import OpenAIError
 from pypdf import PdfReader
@@ -18,6 +19,7 @@ from pypdf.errors import PdfReadError
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
+from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from app.api.dependencies import require_admin as _require_admin
@@ -26,6 +28,7 @@ from app.core.config import settings
 from app.core.logging import configure_logging, reset_request_id, set_request_id
 from app.core.metrics import IN_PROGRESS, metrics_payload, record_request
 from app.core.rate_limit import limiter
+from app.db.session import get_session_factory
 from app.services.chunking import prepare_chunks
 from app.services.embeddings import embed_text
 from app.services.rag import generate_answer
@@ -44,22 +47,29 @@ configure_logging()
 logger = logging.getLogger("app.request")
 
 
-def on_startup() -> None:
+async def on_startup() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    init_db()
+    await init_db()
     _load_existing_index()
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    on_startup()
+    await on_startup()
     yield
 
 
-app = FastAPI(lifespan=lifespan)
+app = FastAPI(title=settings.PROJECT_NAME, lifespan=lifespan)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)  # type: ignore[arg-type]
 app.add_middleware(SlowAPIMiddleware)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.CORS_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.middleware("http")
@@ -186,9 +196,11 @@ def _indexed_chunks_by_source() -> dict[str, int]:
     return counts
 
 
-def _persist_index_state(summary: dict, status: str, error_message: str | None = None) -> None:
-    sync_documents_from_disk(DATA_DIR, ALLOWED_EXTENSIONS, _indexed_chunks_by_source())
-    record_ingestion_run(
+async def _persist_index_state(
+    summary: dict, status: str, error_message: str | None = None
+) -> None:
+    await sync_documents_from_disk(DATA_DIR, ALLOWED_EXTENSIONS, _indexed_chunks_by_source())
+    await record_ingestion_run(
         files_count=int(summary.get("files", 0)),
         chunks_count=int(summary.get("chunks", 0)),
         status=status,
@@ -338,9 +350,11 @@ async def upload_documents(
 
     try:
         summary = _rebuild_index_from_data()
-        _persist_index_state(summary, status="success")
+        await _persist_index_state(summary, status="success")
     except Exception as exc:
-        _persist_index_state({"files": 0, "chunks": 0}, status="failed", error_message=str(exc))
+        await _persist_index_state(
+            {"files": 0, "chunks": 0}, status="failed", error_message=str(exc)
+        )
         _raise_processing_http_error(exc)
     return {
         "uploaded": uploaded,
@@ -349,20 +363,22 @@ async def upload_documents(
 
 
 @limiter.limit(settings.admin_rate_limit)
-def reindex_documents(request: Request, _: None = Depends(_require_admin)):
+async def reindex_documents(request: Request, _: None = Depends(_require_admin)):
     try:
         summary = _rebuild_index_from_data()
-        _persist_index_state(summary, status="success")
+        await _persist_index_state(summary, status="success")
     except Exception as exc:
-        _persist_index_state({"files": 0, "chunks": 0}, status="failed", error_message=str(exc))
+        await _persist_index_state(
+            {"files": 0, "chunks": 0}, status="failed", error_message=str(exc)
+        )
         _raise_processing_http_error(exc)
     return {"reindexed": summary}
 
 
 @limiter.limit(settings.admin_rate_limit)
-def list_documents(request: Request, _: None = Depends(_require_admin)):
+async def list_documents(request: Request, _: None = Depends(_require_admin)):
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    persisted = list_persisted_documents()
+    persisted = await list_persisted_documents()
     if persisted:
         files = [str(row["filename"]) for row in persisted]
         indexed_chunks = sum(int(row["indexed_chunks"]) for row in persisted)
@@ -412,3 +428,34 @@ async def metrics() -> Response:
 @app.get("/health/live")
 async def health_live() -> dict[str, str]:
     return {"status": "ok"}
+
+
+async def _database_connected() -> bool:
+    try:
+        async with get_session_factory()() as db:
+            await db.execute(text("SELECT 1"))
+        return True
+    except Exception:
+        return False
+
+
+@app.get("/health/ready")
+async def health_ready() -> Response:
+    database_ok = await _database_connected()
+    payload = {
+        "status": "ok" if database_ok else "degraded",
+        "database": "connected" if database_ok else "disconnected",
+    }
+    status_code = 200 if database_ok else 503
+    return JSONResponse(status_code=status_code, content=payload)
+
+
+@app.get("/health")
+async def health_check() -> dict[str, str]:
+    database_ok = await _database_connected()
+    return {
+        "status": "ok" if database_ok else "degraded",
+        "database": "connected" if database_ok else "disconnected",
+        "live": "ok",
+        "ready": "ok" if database_ok else "degraded",
+    }

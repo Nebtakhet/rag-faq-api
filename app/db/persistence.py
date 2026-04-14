@@ -1,44 +1,19 @@
 from pathlib import Path
 
-from sqlalchemy import create_engine, select
-from sqlalchemy.engine import Engine
-from sqlalchemy.orm import Session, sessionmaker
-
-from app.core.config import settings
+from sqlalchemy import select
+from app.db import session as db_session
 from app.db.base import Base
 from app.db.models import DocumentRecord, IngestionRun
 
-DEFAULT_DB_URL = "sqlite:///./app.db"
-
-_engine: Engine | None = None
-_SessionLocal: sessionmaker[Session] | None = None
+configure_database = db_session.configure_database
 
 
-def get_database_url() -> str:
-    return settings.sqlalchemy_database_uri or DEFAULT_DB_URL
+async def init_db() -> None:
+    async with db_session.get_engine().begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
 
 
-def configure_database(database_url: str | None = None) -> None:
-    global _engine, _SessionLocal
-    _engine = create_engine(database_url or get_database_url(), future=True)
-    _SessionLocal = sessionmaker(bind=_engine, expire_on_commit=False, future=True)
-
-
-def init_db() -> None:
-    if _engine is None:
-        configure_database()
-    assert _engine is not None
-    Base.metadata.create_all(bind=_engine)
-
-
-def _get_session() -> Session:
-    if _SessionLocal is None:
-        configure_database()
-    assert _SessionLocal is not None
-    return _SessionLocal()
-
-
-def sync_documents_from_disk(
+async def sync_documents_from_disk(
     data_dir: Path,
     allowed_extensions: set[str],
     indexed_chunks_by_source: dict[str, int],
@@ -57,22 +32,18 @@ def sync_documents_from_disk(
         }
         for path in files
     ]
-    record_documents(records)
+    await record_documents(records)
 
 
-def record_documents(records: list[dict[str, str | int]]) -> None:
-    with _get_session() as session:
-        existing = {
-            row.filename: row
-            for row in session.scalars(
-                select(DocumentRecord).order_by(DocumentRecord.filename)
-            ).all()
-        }
+async def record_documents(records: list[dict[str, str | int]]) -> None:
+    async with db_session.get_session_factory()() as session:
+        result = await session.execute(select(DocumentRecord).order_by(DocumentRecord.filename))
+        existing = {row.filename: row for row in result.scalars().all()}
         current_names = {str(record["filename"]) for record in records}
 
         for filename, existing_row in existing.items():
             if filename not in current_names:
-                session.delete(existing_row)
+                await session.delete(existing_row)
 
         for record in records:
             filename = str(record["filename"])
@@ -91,16 +62,16 @@ def record_documents(records: list[dict[str, str | int]]) -> None:
             row.size_bytes = int(record["size_bytes"])
             row.indexed_chunks = int(record.get("indexed_chunks", 0))
 
-        session.commit()
+        await session.commit()
 
 
-def record_ingestion_run(
+async def record_ingestion_run(
     files_count: int,
     chunks_count: int,
     status: str,
     error_message: str | None = None,
 ) -> None:
-    with _get_session() as session:
+    async with db_session.get_session_factory()() as session:
         session.add(
             IngestionRun(
                 files_count=files_count,
@@ -109,12 +80,13 @@ def record_ingestion_run(
                 error_message=error_message,
             )
         )
-        session.commit()
+        await session.commit()
 
 
-def list_persisted_documents() -> list[dict[str, int | str]]:
-    with _get_session() as session:
-        rows = session.scalars(select(DocumentRecord).order_by(DocumentRecord.filename)).all()
+async def list_persisted_documents() -> list[dict[str, int | str]]:
+    async with db_session.get_session_factory()() as session:
+        result = await session.execute(select(DocumentRecord).order_by(DocumentRecord.filename))
+        rows = result.scalars().all()
         return [
             {
                 "filename": row.filename,
@@ -126,11 +98,12 @@ def list_persisted_documents() -> list[dict[str, int | str]]:
         ]
 
 
-def list_ingestion_runs(limit: int = 50) -> list[dict[str, int | str | None]]:
-    with _get_session() as session:
-        rows = session.scalars(
+async def list_ingestion_runs(limit: int = 50) -> list[dict[str, int | str | None]]:
+    async with db_session.get_session_factory()() as session:
+        result = await session.execute(
             select(IngestionRun).order_by(IngestionRun.id.desc()).limit(limit)
-        ).all()
+        )
+        rows = result.scalars().all()
         return [
             {
                 "id": row.id,

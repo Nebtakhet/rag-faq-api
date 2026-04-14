@@ -1,9 +1,12 @@
 from pathlib import Path
 
+import pytest
+
 from app.db import persistence
 
 
-def test_sync_documents_and_list(tmp_path: Path) -> None:
+@pytest.mark.anyio
+async def test_sync_documents_and_list(tmp_path: Path) -> None:
     db_path = tmp_path / "state.db"
     data_dir = tmp_path / "data"
     data_dir.mkdir(parents=True, exist_ok=True)
@@ -13,21 +16,22 @@ def test_sync_documents_and_list(tmp_path: Path) -> None:
     (data_dir / "ignore.json").write_text("x", encoding="utf-8")
 
     persistence.configure_database(f"sqlite:///{db_path}")
-    persistence.init_db()
+    await persistence.init_db()
 
-    persistence.sync_documents_from_disk(
+    await persistence.sync_documents_from_disk(
         data_dir=data_dir,
         allowed_extensions={".txt", ".md", ".pdf"},
         indexed_chunks_by_source={"a.txt": 2, "b.md": 1},
     )
 
-    rows = persistence.list_persisted_documents()
+    rows = await persistence.list_persisted_documents()
 
     assert [row["filename"] for row in rows] == ["a.txt", "b.md"]
     assert sum(int(row["indexed_chunks"]) for row in rows) == 3
 
 
-def test_record_ingestion_run_and_prune_removed_docs(tmp_path: Path) -> None:
+@pytest.mark.anyio
+async def test_record_ingestion_run_and_prune_removed_docs(tmp_path: Path) -> None:
     db_path = tmp_path / "state.db"
     data_dir = tmp_path / "data"
     data_dir.mkdir(parents=True, exist_ok=True)
@@ -36,31 +40,31 @@ def test_record_ingestion_run_and_prune_removed_docs(tmp_path: Path) -> None:
     (data_dir / "remove.txt").write_text("remove", encoding="utf-8")
 
     persistence.configure_database(f"sqlite:///{db_path}")
-    persistence.init_db()
+    await persistence.init_db()
 
-    persistence.sync_documents_from_disk(
+    await persistence.sync_documents_from_disk(
         data_dir=data_dir,
         allowed_extensions={".txt"},
         indexed_chunks_by_source={"keep.txt": 1, "remove.txt": 2},
     )
 
     (data_dir / "remove.txt").unlink()
-    persistence.sync_documents_from_disk(
+    await persistence.sync_documents_from_disk(
         data_dir=data_dir,
         allowed_extensions={".txt"},
         indexed_chunks_by_source={"keep.txt": 3},
     )
 
-    persistence.record_ingestion_run(files_count=1, chunks_count=3, status="success")
-    persistence.record_ingestion_run(
+    await persistence.record_ingestion_run(files_count=1, chunks_count=3, status="success")
+    await persistence.record_ingestion_run(
         files_count=0,
         chunks_count=0,
         status="failed",
         error_message="boom",
     )
 
-    rows = persistence.list_persisted_documents()
-    runs = persistence.list_ingestion_runs(limit=2)
+    rows = await persistence.list_persisted_documents()
+    runs = await persistence.list_ingestion_runs(limit=2)
 
     assert rows == [
         {
