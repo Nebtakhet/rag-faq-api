@@ -25,9 +25,10 @@ Core flow:
 - Request observability headers: `X-Request-ID`, `X-Process-Time-Ms`
 - Structured JSON request logging with per-request correlation ID
 - Prometheus metrics endpoint at `GET /metrics`
-- Liveness endpoint at `GET /health/live`
+- Health endpoints at `GET /health/live`, `GET /health/ready`, and `GET /health`
 - Standardized error payloads for validation, HTTP, and DB errors
 - Redis-backed rate limiting (with in-memory fallback)
+- Async SQLAlchemy persistence with SQLite and PostgreSQL async drivers
 
 ## Ingestion Behavior
 
@@ -99,6 +100,14 @@ RATE_LIMIT_TRUSTED_PROXY_IPS=127.0.0.1
 - `RATE_LIMIT_TRUST_PROXY_HEADERS`: trust proxy headers for client IP extraction.
 - `RATE_LIMIT_TRUSTED_PROXY_IPS`: proxy IP allowlist used when trusting `X-Forwarded-For`.
 
+Production config checks:
+
+- Set `ENVIRONMENT=production` to enable stricter validation.
+- `AUTO_CREATE_SCHEMA` must be disabled in production.
+- `SQLALCHEMY_DATABASE_URI` must point to a non-SQLite database in production.
+- If `RATE_LIMIT_TRUST_PROXY_HEADERS=true`, you must also set `RATE_LIMIT_TRUSTED_PROXY_IPS`.
+- `CORS_ORIGINS` must not be empty in production.
+
 Optional keys in `.env.example` are also available for migration/docker setups (`SQLALCHEMY_DATABASE_URI`, `REDIS_URL`, etc.).
 
 Deployment note:
@@ -141,6 +150,8 @@ make ci          # full local CI pipeline
 - `GET /admin/documents`
 - `GET /metrics`
 - `GET /health/live`
+- `GET /health/ready`
+- `GET /health`
 
 Admin endpoints require header `X-Admin-Key: <ADMIN_API_KEY>`.
 
@@ -163,6 +174,12 @@ curl -i "http://127.0.0.1:8000/ask?question=What%20does%20this%20project%20do%3F
 ```
 
 If you repeat that request too quickly, the API responds with `429 Too Many Requests`.
+
+Health checks:
+
+- `GET /health/live` returns basic liveness.
+- `GET /health/ready` checks database readiness and returns `503` if the DB is unavailable.
+- `GET /health` returns both liveness and readiness status in one response.
 
 ## Example Usage
 
@@ -203,6 +220,7 @@ curl -X POST "http://127.0.0.1:8000/admin/reindex" \
   - `data/faiss.index`
   - `data/faiss_metadata.json`
 - SQL persistence is stored in the configured DB URL (`SQLALCHEMY_DATABASE_URI`) or fallback `app.db`.
+- The app automatically converts SQLite URLs to `sqlite+aiosqlite://` and PostgreSQL URLs to `postgresql+asyncpg://` for async SQLAlchemy.
 
 ### Data Model
 
