@@ -45,6 +45,14 @@ Core flow:
 - Python 3.11+
 - A valid OpenAI API key
 
+## Security Baseline
+
+- `pypdf` is pinned at `>=6.10.2`.
+- `python-multipart` is pinned at `>=0.0.26`.
+- Dev tooling includes patched minimums for `requests` and `Pygments`.
+- Dependency audit is part of CI (`make security`, also included in `make ci`).
+- One audit ignore remains for `CVE-2024-23342` (`ecdsa` timing side-channel) because no upstream fix version is currently published.
+
 ## Quick Start
 
 1. Create and activate a virtual environment:
@@ -138,6 +146,7 @@ http://127.0.0.1:8000/docs
 
 ```bash
 make test        # run tests
+make security    # dependency vulnerability audit (pip-audit)
 make quality     # lint + format-check + mypy
 make ci          # full local CI pipeline
 ```
