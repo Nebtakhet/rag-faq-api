@@ -68,7 +68,7 @@ typecheck:
 
 security:
 	$(PIP) install --upgrade pip
-	$(PIP_AUDIT) --ignore-vuln CVE-2024-23342 --ignore-vuln CVE-2026-30922 --ignore-vuln CVE-2026-33936 --ignore-vuln CVE-2026-4539 --ignore-vuln CVE-2026-33123 --ignore-vuln CVE-2026-33699 --ignore-vuln CVE-2026-25645
+	$(PIP_AUDIT) --ignore-vuln CVE-2024-23342
 
 quality: lint format-check typecheck
 
